@@ -1,0 +1,174 @@
+import numpy as np  # Import NumPy for handling numerical data
+import random  # Import random for random choices
+import json  # Import JSON for working with structured data
+import pickle  # Import pickle for saving and loading data
+import warnings  # Import warnings to suppress unnecessary warnings
+import nltk  # Import Natural Language Toolkit for text processing
+from nltk.stem.lancaster import LancasterStemmer  # Import a stemmer to reduce words to their base form
+from tensorflow.keras.models import Sequential  # Import Sequential model from TensorFlow
+from tensorflow.keras.layers import Dense  # Import Dense layer to create neural network layers
+from tensorflow.keras.optimizers import Adam  # Import Adam optimizer for training the model
+
+# Suppress warnings to keep the output clean
+warnings.filterwarnings("ignore")
+
+# Initialize the stemmer for word processing
+stemmer = LancasterStemmer()
+
+# Define chatbot responses and patterns
+intents = {
+    "intents": [
+        {"tag": "greeting",
+         "patterns": ["Hi", "How are you", "Is anyone there?", "Hello", "Good day"],
+         "responses": ["Hello, thanks for visiting", "Good to see you again", "Hi there, how can I help?"],
+         "context_set": ""
+         },
+        {"tag": "goodbye",
+         "patterns": ["Bye", "See you later", "Goodbye"],
+         "responses": ["See you later, thanks for visiting", "Have a nice day", "Bye! Come back again soon."]
+         },
+        # More intents can be added here...
+    ]
+}
+
+# Lists to hold words, classes (categories), and documents
+words = []
+classes = []
+documents = []
+ignore_words = ['?']  # Ignore punctuation like question marks
+
+print("Processing chatbot intents...")
+for intent in intents['intents']:
+    for pattern in intent['patterns']:
+        # Break each sentence into words
+        w = nltk.word_tokenize(pattern)
+        words.extend(w)  # Add words to the list
+        documents.append((w, intent['tag']))  # Store words with their corresponding category
+        if intent['tag'] not in classes:
+            classes.append(intent['tag'])  # Add new categories (intents)
+
+print("Applying stemming and removing duplicates...")
+words = [stemmer.stem(w.lower()) for w in words if w not in ignore_words]  # Convert words to base form
+words = sorted(list(set(words)))  # Remove duplicates and sort
+classes = sorted(list(set(classes)))  # Sort the intent classes
+
+print(f"{len(documents)} documents, {len(classes)} classes, {len(words)} unique words")
+
+# Create training data for the chatbot model
+print("Preparing training data...")
+training = []
+output_empty = [0] * len(classes)  # Create empty output array
+
+for doc in documents:
+    bag = []  # Word presence indicator
+    pattern_words = [stemmer.stem(word.lower()) for word in doc[0]]
+    for w in words:
+        bag.append(1) if w in pattern_words else bag.append(0)
+    output_row = list(output_empty)
+    output_row[classes.index(doc[1])] = 1  # Mark the correct category
+    training.append([bag, output_row])
+
+# Shuffle data and convert to NumPy arrays for model training
+print("Shuffling data and converting to arrays...")
+random.shuffle(training)
+training = np.array(training, dtype=object)
+
+train_x = np.array(list(training[:, 0]))  # Input data (features)
+train_y = np.array(list(training[:, 1]))  # Output data (labels)
+
+# Create a neural network model
+print("Building the chatbot model...")
+model = Sequential()
+model.add(Dense(8, input_shape=(len(train_x[0]),), activation='relu'))  # First hidden layer
+model.add(Dense(8, activation='relu'))  # Second hidden layer
+model.add(Dense(len(train_y[0]), activation='softmax'))  # Output layer (one node per category)
+
+# Compile the model
+model.compile(optimizer=Adam(), loss='categorical_crossentropy', metrics=['accuracy'])
+
+# Train the model
+print("Training the model...")
+try:
+    model.fit(train_x, train_y, epochs=1000, batch_size=8, verbose=1)
+except Exception as e:
+    print(f"Error during training: {e}")
+    exit()
+
+# Save the trained model to a file
+print("Saving the trained model...")
+model.save('model.h5')
+
+# Save the training data for later use
+print("Saving training data...")
+try:
+    with open("training_data", "wb") as f:
+        pickle.dump({'words': words, 'classes': classes, 'train_x': train_x, 'train_y': train_y}, f)
+except Exception as e:
+    print(f"Error saving data: {e}")
+    exit()
+
+# Load the saved data
+print("Loading saved data...")
+try:
+    with open("training_data", "rb") as f:
+        data = pickle.load(f)
+    words = data['words']
+    classes = data['classes']
+    train_x = data['train_x']
+    train_y = data['train_y']
+except Exception as e:
+    print(f"Error loading data: {e}")
+    exit()
+
+# Load the trained model
+print("Loading trained model...")
+try:
+    from tensorflow.keras.models import load_model
+    model = load_model('model.h5')
+except Exception as e:
+    print(f"Error loading model: {e}")
+    exit()
+
+# Function to clean up input sentences
+def clean_up_sentence(sentence):
+    sentence_words = nltk.word_tokenize(sentence)
+    sentence_words = [stemmer.stem(word.lower()) for word in sentence_words]
+    return sentence_words
+
+# Convert a sentence into a numerical representation
+def bow(sentence, words, show_details=False):
+    sentence_words = clean_up_sentence(sentence)
+    bag = [0] * len(words)
+    for s in sentence_words:
+        for i, w in enumerate(words):
+            if w == s:
+                bag[i] = 1
+    return np.array(bag)
+
+ERROR_THRESHOLD = 0.25  # Set confidence threshold for chatbot responses
+
+# Classify user input based on trained model
+def classify(sentence):
+    results = model.predict(np.array([bow(sentence, words)]))[0]
+    results = [[i, r] for i, r in enumerate(results) if r > ERROR_THRESHOLD]
+    results.sort(key=lambda x: x[1], reverse=True)
+    return [(classes[r[0]], r[1]) for r in results]
+
+# Generate chatbot responses
+def response(sentence):
+    results = classify(sentence)
+    if results:
+        for i in intents['intents']:
+            if i['tag'] == results[0][0]:
+                return random.choice(i['responses'])
+    return "I don't understand. Can you rephrase?"
+
+# Chatbot interaction loop
+print("Chatbot is ready! Type 'exit' to stop.")
+while True:
+    input_data = input("You: ")
+    if input_data.lower() == 'exit':
+        print("Goodbye!")
+        break
+    answer = response(input_data)
+    print(f"Bot: {answer}")
