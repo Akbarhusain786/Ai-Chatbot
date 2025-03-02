@@ -1,21 +1,27 @@
-import numpy as np  # Import NumPy for handling numerical data
-import random  # Import random for random choices
-import json  # Import JSON for working with structured data
-import pickle  # Import pickle for saving and loading data
-import warnings  # Import warnings to suppress unnecessary warnings
-import nltk  # Import Natural Language Toolkit for text processing
-from nltk.stem.lancaster import LancasterStemmer  # Import a stemmer to reduce words to their base form
-from tensorflow.keras.models import Sequential  # Import Sequential model from TensorFlow
-from tensorflow.keras.layers import Dense  # Import Dense layer to create neural network layers
-from tensorflow.keras.optimizers import Adam  # Import Adam optimizer for training the model
+# Import necessary libraries
+from flask import Flask, render_template, request, jsonify  # Flask for web framework
+import numpy as np  # For numerical operations
+import random  # For random selection of responses
+import json  # For handling JSON data
+import pickle  # For loading saved data
+import warnings  # To suppress warnings
+import nltk  # Natural Language Toolkit for text processing
+from nltk.stem.lancaster import LancasterStemmer  # Stemmer to reduce words to their root form
+from tensorflow.keras.models import Sequential  # Keras Sequential model for neural networks
+from tensorflow.keras.layers import Dense  # Dense layer for neural networks
+from tensorflow.keras.optimizers import Adam  # Adam optimizer for training the model
 
-# Suppress warnings to keep the output clean
+# Initialize the Flask app
+app = Flask(__name__)
+
+# Suppress warnings to avoid clutter in the console
 warnings.filterwarnings("ignore")
 
-# Initialize the stemmer for word processing
+# Initialize the Lancaster Stemmer
 stemmer = LancasterStemmer()
 
-# Define chatbot responses and patterns
+# Define the intents for the chatbot
+# Intents are categories of user inputs and corresponding responses
 intents = {
     "intents": [
         {"tag": "greeting",
@@ -27,148 +33,261 @@ intents = {
          "patterns": ["Bye", "See you later", "Goodbye"],
          "responses": ["See you later, thanks for visiting", "Have a nice day", "Bye! Come back again soon."]
          },
+{"tag": "thanks",
+         "patterns": ["Thanks", "Thank you", "That's helpful"],
+         "responses": ["Happy to help!", "Any time!", "My pleasure"]
+        },
+        {"tag": "hours",
+         "patterns": ["What hours are you open?", "What are your hours?", "When are you open?" ],
+         "responses": ["We're open every day 9am-9pm", "Our hours are 9am-9pm every day"]
+        },
+        {"tag": "mopeds",
+         "patterns": ["Which mopeds do you have?", "What kinds of mopeds are there?", "What do you rent?" ],
+         "responses": ["We rent Yamaha, Piaggio and Vespa mopeds", "We have Piaggio, Vespa and Yamaha mopeds"]
+        },
+        {"tag": "payments",
+         "patterns": ["Do you take credit cards?", "Do you accept Mastercard?", "Are you cash only?" ],
+         "responses": ["We accept VISA, Mastercard and AMEX", "We accept most major credit cards"]
+        },
+        {"tag": "opentoday",
+         "patterns": ["Are you open today?", "When do you open today?", "What are your hours today?"],
+         "responses": ["We're open every day from 9am-9pm", "Our hours are 9am-9pm every day"]
+        },
+        {"tag": "rental",
+         "patterns": ["Can we rent a moped?", "I'd like to rent a moped", "How does this work?" ],
+         "responses": ["Are you looking to rent today or later this week?"],
+         "context_set": "rentalday"
+        },
+        {"tag": "today",
+         "patterns": ["today"],
+         "responses": ["For rentals today please call 1-800-MYMOPED", "Same-day rentals please call 1-800-MYMOPED"],
+         "context_filter": "rentalday"
+        }
         # More intents can be added here...
     ]
 }
 
-# Lists to hold words, classes (categories), and documents
-words = []
-classes = []
-documents = []
-ignore_words = ['?']  # Ignore punctuation like question marks
+# Function to load the trained model and data
+def load_model_and_data():
+    try:
+        # Load the preprocessed data and model
+        with open("training_data", "rb") as f:
+            data = pickle.load(f)
+        words = data['words']  # Vocabulary of words
+        classes = data['classes']  # Categories of intents
+        train_x = data['train_x']  # Training data features
+        train_y = data['train_y']  # Training data labels
 
-print("Processing chatbot intents...")
-for intent in intents['intents']:
-    for pattern in intent['patterns']:
-        # Break each sentence into words
-        w = nltk.word_tokenize(pattern)
-        words.extend(w)  # Add words to the list
-        documents.append((w, intent['tag']))  # Store words with their corresponding category
-        if intent['tag'] not in classes:
-            classes.append(intent['tag'])  # Add new categories (intents)
+        # Load the trained Keras model
+        from tensorflow.keras.models import load_model
+        model = load_model('model.h5')
+        return model, words, classes
+    except Exception as e:
+        print(f"Error loading model or data: {e}")
+        return None, None, None
 
-print("Applying stemming and removing duplicates...")
-words = [stemmer.stem(w.lower()) for w in words if w not in ignore_words]  # Convert words to base form
-words = sorted(list(set(words)))  # Remove duplicates and sort
-classes = sorted(list(set(classes)))  # Sort the intent classes
+# Load the model and data
+model, words, classes = load_model_and_data()
 
-print(f"{len(documents)} documents, {len(classes)} classes, {len(words)} unique words")
-
-# Create training data for the chatbot model
-print("Preparing training data...")
-training = []
-output_empty = [0] * len(classes)  # Create empty output array
-
-for doc in documents:
-    bag = []  # Word presence indicator
-    pattern_words = [stemmer.stem(word.lower()) for word in doc[0]]
-    for w in words:
-        bag.append(1) if w in pattern_words else bag.append(0)
-    output_row = list(output_empty)
-    output_row[classes.index(doc[1])] = 1  # Mark the correct category
-    training.append([bag, output_row])
-
-# Shuffle data and convert to NumPy arrays for model training
-print("Shuffling data and converting to arrays...")
-random.shuffle(training)
-training = np.array(training, dtype=object)
-
-train_x = np.array(list(training[:, 0]))  # Input data (features)
-train_y = np.array(list(training[:, 1]))  # Output data (labels)
-
-# Create a neural network model
-print("Building the chatbot model...")
-model = Sequential()
-model.add(Dense(8, input_shape=(len(train_x[0]),), activation='relu'))  # First hidden layer
-model.add(Dense(8, activation='relu'))  # Second hidden layer
-model.add(Dense(len(train_y[0]), activation='softmax'))  # Output layer (one node per category)
-
-# Compile the model
-model.compile(optimizer=Adam(), loss='categorical_crossentropy', metrics=['accuracy'])
-
-# Train the model
-print("Training the model...")
-try:
-    model.fit(train_x, train_y, epochs=1000, batch_size=8, verbose=1)
-except Exception as e:
-    print(f"Error during training: {e}")
-    exit()
-
-# Save the trained model to a file
-print("Saving the trained model...")
-model.save('model.h5')
-
-# Save the training data for later use
-print("Saving training data...")
-try:
-    with open("training_data", "wb") as f:
-        pickle.dump({'words': words, 'classes': classes, 'train_x': train_x, 'train_y': train_y}, f)
-except Exception as e:
-    print(f"Error saving data: {e}")
-    exit()
-
-# Load the saved data
-print("Loading saved data...")
-try:
-    with open("training_data", "rb") as f:
-        data = pickle.load(f)
-    words = data['words']
-    classes = data['classes']
-    train_x = data['train_x']
-    train_y = data['train_y']
-except Exception as e:
-    print(f"Error loading data: {e}")
-    exit()
-
-# Load the trained model
-print("Loading trained model...")
-try:
-    from tensorflow.keras.models import load_model
-    model = load_model('model.h5')
-except Exception as e:
-    print(f"Error loading model: {e}")
-    exit()
-
-# Function to clean up input sentences
+# Function to preprocess and clean up input sentences
 def clean_up_sentence(sentence):
+    # Tokenize the sentence into words
     sentence_words = nltk.word_tokenize(sentence)
+    # Stem and lowercase each word
     sentence_words = [stemmer.stem(word.lower()) for word in sentence_words]
     return sentence_words
 
-# Convert a sentence into a numerical representation
+# Function to convert a sentence into a bag of words (BoW) representation
 def bow(sentence, words, show_details=False):
+    # Clean the sentence
     sentence_words = clean_up_sentence(sentence)
+    # Create a bag of words with zeros
     bag = [0] * len(words)
+    # Mark the presence of each word in the sentence
     for s in sentence_words:
         for i, w in enumerate(words):
             if w == s:
                 bag[i] = 1
     return np.array(bag)
 
-ERROR_THRESHOLD = 0.25  # Set confidence threshold for chatbot responses
+# Confidence threshold for chatbot responses
+ERROR_THRESHOLD = 0.25
 
-# Classify user input based on trained model
+# Function to classify user input based on the trained model
 def classify(sentence):
+    # Predict the intent of the sentence
     results = model.predict(np.array([bow(sentence, words)]))[0]
+    # Filter results above the confidence threshold
     results = [[i, r] for i, r in enumerate(results) if r > ERROR_THRESHOLD]
+    # Sort results by confidence score in descending order
     results.sort(key=lambda x: x[1], reverse=True)
+    # Return the list of possible intents with their confidence scores
     return [(classes[r[0]], r[1]) for r in results]
 
-# Generate chatbot responses
+# Function to generate a response based on the classified intent
 def response(sentence):
+    # Classify the user input
     results = classify(sentence)
     if results:
+        # Find the matching intent and return a random response
         for i in intents['intents']:
             if i['tag'] == results[0][0]:
                 return random.choice(i['responses'])
+    # Default response if no intent is matched
     return "I don't understand. Can you rephrase?"
 
-# Chatbot interaction loop
-print("Chatbot is ready! Type 'exit' to stop.")
-while True:
-    input_data = input("You: ")
-    if input_data.lower() == 'exit':
-        print("Goodbye!")
-        break
-    answer = response(input_data)
-    print(f"Bot: {answer}")
+# Flask route for the home page
+@app.route('/')
+def index():
+    # Render the HTML template for the chatbot interface
+    return '''
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Chatbot</title>
+        <style>
+            /* CSS styles for the chatbot interface */
+            body {
+                font-family: Arial, sans-serif;
+                background-color: #f4f4f4;
+                margin: 0;
+                padding: 0;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                height: 100vh;
+            }
+            .chat-container {
+                width: 400px;
+                background-color: #fff;
+                border-radius: 10px;
+                box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+                overflow: hidden;
+                display: flex;
+                flex-direction: column;
+            }
+            .chat-header {
+                background-color: #075e54;
+                color: #fff;
+                padding: 15px;
+                text-align: center;
+            }
+            .chat-box {
+                flex: 1;
+                padding: 15px;
+                overflow-y: auto;
+                background-color: #ece5dd;
+            }
+            .message {
+                margin-bottom: 15px;
+                padding: 10px;
+                border-radius: 10px;
+                max-width: 70%;
+            }
+            .message.user {
+                background-color: #dcf8c6;
+                margin-left: auto;
+            }
+            .message.bot {
+                background-color: #fff;
+                margin-right: auto;
+            }
+            .chat-input {
+                display: flex;
+                padding: 10px;
+                background-color: #f0f0f0;
+            }
+            .chat-input input {
+                flex: 1;
+                padding: 10px;
+                border: 1px solid #ccc;
+                border-radius: 5px;
+                margin-right: 10px;
+            }
+            .chat-input button {
+                padding: 10px 15px;
+                background-color: #075e54;
+                color: #fff;
+                border: none;
+                border-radius: 5px;
+                cursor: pointer;
+            }
+            .chat-input button:hover {
+                background-color: #128c7e;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="chat-container">
+            <div class="chat-header">
+                <h2>Chatbot</h2>
+            </div>
+            <div class="chat-box" id="chat-box">
+                <!-- Chat messages will appear here -->
+            </div>
+            <div class="chat-input">
+                <input type="text" id="user-input" placeholder="Type a message...">
+                <button id="send-btn">Send</button>
+            </div>
+        </div>
+
+        <script>
+            // JavaScript to handle user input and display chat messages
+            document.getElementById('send-btn').addEventListener('click', function() {
+                sendMessage();
+            });
+
+            document.getElementById('user-input').addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') {
+                    sendMessage();
+                }
+            });
+
+            function sendMessage() {
+                const userInput = document.getElementById('user-input').value;
+                if (userInput.trim() === '') return;
+
+                appendMessage('user', userInput);
+                document.getElementById('user-input').value = '';
+
+                fetch('/get_response', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ message: userInput }),
+                })
+                .then(response => response.json())
+                .then(data => {
+                    appendMessage('bot', data.response);
+                });
+            }
+
+            function appendMessage(sender, message) {
+                const chatBox = document.getElementById('chat-box');
+                const messageElement = document.createElement('div');
+                messageElement.classList.add('message', sender);
+                messageElement.textContent = message;
+                chatBox.appendChild(messageElement);
+                chatBox.scrollTop = chatBox.scrollHeight;
+            }
+        </script>
+    </body>
+    </html>
+    '''
+
+# Flask route to handle chatbot responses
+@app.route('/get_response', methods=['POST'])
+def get_response():
+    # Get user input from the request
+    user_input = request.json['message']
+    # Generate a response using the chatbot
+    bot_response = response(user_input)
+    # Return the response as JSON
+    return jsonify({'response': bot_response})
+
+# Run the Flask app
+if __name__ == '__main__':
+    app.run(debug=True)
